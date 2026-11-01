@@ -1,0 +1,11 @@
+{
+  "version_code": 118,
+  "version_name": "1.0.18",
+  "min_supported_version_code": 1,
+  "changelog": [
+    "OpenCode agent (Antigravity-level): enable in Settings \u2192 Agents",
+    "Runtime install of opencode binary (Linux) via Settings \u2192 OpenCode",
+    "Session chat, status, history load through local bridge"
+  ],
+  "is_critical": false
+}
