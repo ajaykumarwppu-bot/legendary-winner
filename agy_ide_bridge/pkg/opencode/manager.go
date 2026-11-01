@@ -7,7 +7,6 @@ package opencode
 import (
 	"context"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"os"
