@@ -302,16 +302,16 @@ class OpenCodeChatBackend(
     }
 
     /**
-     * Start a managed install of the official Linux binary (no-op / error on Android).
-     * Poll [installInfo] for job progress.
+     * Start managed install: official Linux binary, or native Android aarch64 build on phone.
+     * Poll [installInfo] for job progress / errors (shown on OpenCode settings screen).
      */
     fun startInstall() {
         backendScope.launch(Dispatchers.IO) {
             client.startInstall()
                 .onSuccess {
                     _installInfo.value = it
-                    // poll until job finishes
-                    repeat(120) {
+                    // Large Android builds can take several minutes
+                    repeat(300) {
                         kotlinx.coroutines.delay(1000)
                         val info = client.installInfo().getOrNull() ?: return@repeat
                         _installInfo.value = info
@@ -322,9 +322,18 @@ class OpenCodeChatBackend(
                         }
                     }
                 }
-                .onFailure {
-                    _conversationError.value = it.message
-                    Log.e(TAG, "startInstall failed", it)
+                .onFailure { err ->
+                    Log.e(TAG, "startInstall failed", err)
+                    _conversationError.value = err.message
+                    // Surface on settings UI even when HTTP fails before a job starts
+                    val prev = _installInfo.value ?: org.json.JSONObject()
+                    val job = org.json.JSONObject()
+                        .put("running", false)
+                        .put("done", true)
+                        .put("error", err.message ?: "install failed")
+                        .put("log", "ERROR: ${err.message ?: "install failed"}")
+                    prev.put("job", job)
+                    _installInfo.value = prev
                 }
         }
     }

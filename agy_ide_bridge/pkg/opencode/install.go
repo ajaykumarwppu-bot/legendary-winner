@@ -42,10 +42,17 @@ func InstallDir() string {
 
 // IsAndroid reports Termux / Android environment.
 func IsAndroid() bool {
+	if runtime.GOOS == "android" {
+		return true
+	}
 	if os.Getenv("ANDROID_ROOT") != "" || os.Getenv("ANDROID_DATA") != "" {
 		return true
 	}
 	if strings.Contains(strings.ToLower(os.Getenv("PREFIX")), "com.termux") {
+		return true
+	}
+	// AntiGem / proot on phone sometimes still has android paths in PATH
+	if strings.Contains(os.Getenv("PATH"), "/data/data/com.termux") {
 		return true
 	}
 	return false
@@ -76,8 +83,9 @@ func (m *Manager) InstallInfo() InstallInfo {
 		info.Installed = true
 		info.BinPath = bin
 		info.Version = probeVersion(bin)
+		info.Hint = "Binary found. If status is not ONLINE, tap Refresh or restart the app."
 	} else if IsAndroid() {
-		info.Hint = "On Termux/Android use a community opencode build (e.g. pkg install opencode if available), or place a binary on PATH. Official Linux binaries need glibc and will not run on Android."
+		info.Hint = "Binary missing. Tap Install OpenCode to download a native Android (aarch64) build into ~/.opencode/bin, then wait for ONLINE."
 	} else {
 		info.Hint = "Not found. Tap Install to download the official binary for this platform."
 	}
@@ -107,7 +115,7 @@ func setInstallState(s InstallState) {
 	installMu.Unlock()
 }
 
-// StartInstall begins a background install of the official Linux binary (non-Android).
+// StartInstall begins a background install (Linux official or Android native community build).
 func (m *Manager) StartInstall() error {
 	installMu.Lock()
 	if installState.Running {
@@ -136,12 +144,15 @@ func (m *Manager) runInstall() {
 		})
 	}
 
+	var asset *releaseAsset
+	var err error
 	if IsAndroid() {
-		fail(fmt.Errorf("official OpenCode binaries are Linux/glibc and do not run on Android. Install a Termux community build or place a native binary on PATH, then restart the bridge"))
-		return
+		appendLog("Android detected — downloading native aarch64 OpenCode build…")
+		asset, err = resolveAndroidReleaseAsset()
+	} else {
+		appendLog("Resolving official OpenCode release for " + runtime.GOOS + "/" + runtime.GOARCH + "…")
+		asset, err = resolveReleaseAsset()
 	}
-
-	asset, err := resolveReleaseAsset()
 	if err != nil {
 		fail(err)
 		return
@@ -172,8 +183,9 @@ func (m *Manager) runInstall() {
 	appendLog("Installed: " + dest)
 	if v := probeVersion(dest); v != "" {
 		appendLog("Version: " + v)
+	} else {
+		appendLog("Warning: could not run --version (binary may still work for serve).")
 	}
-	// restart serve with the new binary when possible
 	appendLog("Restarting OpenCode serve…")
 	if err := m.Restart(context.Background()); err != nil {
 		appendLog("Restart warning: " + err.Error())
@@ -193,6 +205,69 @@ type releaseAsset struct {
 	URL  string
 }
 
+// resolveAndroidReleaseAsset picks a native Android/aarch64 build from
+// Spectra010s/opencode-termux (Bionic — runs on Android without glibc).
+func resolveAndroidReleaseAsset() (*releaseAsset, error) {
+	api := "https://api.github.com/repos/Spectra010s/opencode-termux/releases/latest"
+	req, err := http.NewRequest(http.MethodGet, api, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "antiGem-opencode-installer")
+	client := &http.Client{Timeout: 45 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("GitHub API: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("GitHub releases API: HTTP %d", resp.StatusCode)
+	}
+	var rel struct {
+		TagName string `json:"tag_name"`
+		Assets  []struct {
+			Name               string `json:"name"`
+			BrowserDownloadURL string `json:"browser_download_url"`
+		} `json:"assets"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&rel); err != nil {
+		return nil, err
+	}
+
+	// Prefer tar.gz android aarch64 source/binary packages.
+	var candidates []releaseAsset
+	for _, a := range rel.Assets {
+		n := strings.ToLower(a.Name)
+		if strings.Contains(n, "sha256") || strings.Contains(n, "checksum") {
+			continue
+		}
+		if !(strings.Contains(n, "android") || strings.Contains(n, "termux") || strings.Contains(n, "aarch64") || strings.Contains(n, "arm64")) {
+			continue
+		}
+		if strings.HasSuffix(n, ".tar.gz") || strings.HasSuffix(n, ".tgz") || strings.HasSuffix(n, ".zip") || !strings.Contains(n, ".") {
+			candidates = append(candidates, releaseAsset{Name: a.Name, URL: a.BrowserDownloadURL})
+		}
+	}
+	for _, c := range candidates {
+		n := strings.ToLower(c.Name)
+		if strings.Contains(n, "android") && (strings.Contains(n, "aarch64") || strings.Contains(n, "arm64")) &&
+			(strings.HasSuffix(n, ".tar.gz") || strings.HasSuffix(n, ".tgz")) {
+			return &c, nil
+		}
+	}
+	if len(candidates) > 0 {
+		return &candidates[0], nil
+	}
+
+	// Fallback: pinned known release if API shape changes
+	fallback := "https://github.com/Spectra010s/opencode-termux/releases/download/v2.0.28/opencode-2.0.28-android-aarch64-source-bun140.tar.gz"
+	return &releaseAsset{
+		Name: "opencode-2.0.28-android-aarch64-source-bun140.tar.gz",
+		URL:  fallback,
+	}, nil
+}
+
 func resolveReleaseAsset() (*releaseAsset, error) {
 	api := "https://api.github.com/repos/anomalyco/opencode/releases/latest"
 	req, err := http.NewRequest(http.MethodGet, api, nil)
@@ -201,7 +276,8 @@ func resolveReleaseAsset() (*releaseAsset, error) {
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", "antiGem-opencode-installer")
-	resp, err := http.DefaultClient.Do(req)
+	client := &http.Client{Timeout: 45 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -247,7 +323,13 @@ func releaseAssetName(goos, goarch string) string {
 }
 
 func downloadFile(url, dest string, log func(string)) error {
-	resp, err := http.Get(url)
+	client := &http.Client{Timeout: 10 * time.Minute}
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", "antiGem-opencode-installer")
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -290,6 +372,11 @@ func extractTarGzBinary(src, dest string) error {
 	}
 	defer gz.Close()
 	tr := tar.NewReader(gz)
+
+	candidate := dest + ".candidate"
+	_ = os.Remove(candidate)
+	foundPreferred := false
+
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -298,16 +385,47 @@ func extractTarGzBinary(src, dest string) error {
 		if err != nil {
 			return err
 		}
+		if hdr.Typeflag != tar.TypeReg {
+			continue
+		}
 		base := filepath.Base(hdr.Name)
-		if hdr.Typeflag == tar.TypeReg && (base == "opencode" || strings.HasPrefix(base, "opencode")) {
-			out, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
-			if err != nil {
-				return err
-			}
-			_, err = io.Copy(out, tr)
-			out.Close()
+		lower := strings.ToLower(base)
+		isPreferred := base == "opencode" || lower == "opencode.bin" ||
+			(strings.HasPrefix(lower, "opencode") &&
+				!strings.Contains(lower, ".json") &&
+				!strings.Contains(lower, ".md") &&
+				!strings.Contains(lower, ".txt") &&
+				!strings.Contains(lower, ".sha"))
+		isLarge := hdr.Size > 1_000_000
+		if !isPreferred && !isLarge {
+			continue
+		}
+		outPath := dest
+		if !isPreferred {
+			outPath = candidate
+		}
+		out, err := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+		if err != nil {
 			return err
 		}
+		_, err = io.Copy(out, tr)
+		out.Close()
+		if err != nil {
+			return err
+		}
+		if isPreferred {
+			foundPreferred = true
+			_ = os.Remove(candidate)
+			return nil
+		}
+	}
+	if foundPreferred {
+		return nil
+	}
+	if st, err := os.Stat(candidate); err == nil && st.Size() > 0 {
+		_ = os.Rename(candidate, dest)
+		_ = os.Chmod(dest, 0o755)
+		return nil
 	}
 	return fmt.Errorf("opencode binary not found inside archive")
 }

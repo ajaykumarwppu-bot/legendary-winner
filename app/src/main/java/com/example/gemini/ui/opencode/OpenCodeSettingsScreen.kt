@@ -155,7 +155,7 @@ fun OpenCodeSettingsScreen(
         Text("Runtime install", fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
         Text(
             if (android) {
-                "Official OpenCode builds are Linux/glibc and will not run on Android. Use a Termux community package or put a native binary on PATH, then refresh."
+                "Downloads a native Android (aarch64) OpenCode build into ~/.opencode/bin and restarts serve. Needs internet; may take 1–3 minutes."
             } else {
                 "Downloads the latest official binary from GitHub into ~/.opencode/bin and restarts serve."
             },
@@ -167,7 +167,7 @@ fun OpenCodeSettingsScreen(
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Button(
                 onClick = { backend.startInstall() },
-                enabled = !jobRunning && !android,
+                enabled = !jobRunning,
                 shape = RoundedCornerShape(12.dp)
             ) {
                 if (jobRunning) {
@@ -182,6 +182,7 @@ fun OpenCodeSettingsScreen(
             }
             OutlinedButton(
                 onClick = { backend.refreshInstallInfo() },
+                enabled = !jobRunning,
                 shape = RoundedCornerShape(12.dp)
             ) {
                 Text("Refresh")
