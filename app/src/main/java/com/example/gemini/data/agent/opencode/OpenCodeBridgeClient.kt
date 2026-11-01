@@ -92,7 +92,7 @@ class OpenCodeBridgeClient(
                 // fallback: concatenate text parts if present
                 val parts = obj.optJSONArray("parts")
                 buildString {
-                    if (parts != nil) {
+                    if (parts != null) {
                         for (i in 0 until parts.length()) {
                             val p = parts.optJSONObject(i) ?: continue
                             if (p.optString("type") == "text") {
