@@ -204,7 +204,10 @@ func (m *Manager) Start(ctx context.Context) error {
 	cmd := exec.CommandContext(runCtx, bin, args...)
 	cmd.Dir = m.WorkspaceDir
 	cmd.Env = os.Environ()
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Setpgid is unreliable on Android/Termux; only use it off-Android.
+	if !IsAndroid() {
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	}
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -221,9 +224,10 @@ func (m *Manager) Start(ctx context.Context) error {
 
 	if err := cmd.Start(); err != nil {
 		cancel()
-		m.setStatus(StatusError, "start failed: "+err.Error())
+		m.setStatus(StatusError, "start failed: "+err.Error()+" (bin="+bin+")")
 		return err
 	}
+	m.appendLog("[mgr] started pid — waiting for health on :" + port)
 
 	m.mu.Lock()
 	m.cmd = cmd
@@ -271,14 +275,23 @@ func (m *Manager) Start(ctx context.Context) error {
 		m.mu.Lock()
 		m.isRunning = false
 		m.cmd = nil
+		logs := append([]string(nil), m.recentLogs...)
 		if m.processDone != nil {
 			close(m.processDone)
 			m.processDone = nil
 		}
 		m.mu.Unlock()
 		if err != nil && runCtx.Err() == nil {
-			m.setStatus(StatusError, "process exited: "+err.Error())
-		} else {
+			tail := ""
+			if len(logs) > 0 {
+				n := len(logs)
+				if n > 8 {
+					logs = logs[n-8:]
+				}
+				tail = " | " + strings.Join(logs, " · ")
+			}
+			m.setStatus(StatusError, "process exited: "+err.Error()+tail)
+		} else if runCtx.Err() == nil {
 			m.setStatus(StatusStopped, "")
 		}
 	}()
@@ -291,8 +304,8 @@ func (m *Manager) Start(ctx context.Context) error {
 
 func (m *Manager) waitUntilOnline(ctx context.Context, port string) {
 	client := &http.Client{Timeout: 2 * time.Second}
-	url := "http://127.0.0.1:" + port + healthPath
-	deadline := time.Now().Add(25 * time.Second)
+	paths := []string{healthPath, "/health", "/global/health", "/"}
+	deadline := time.Now().Add(60 * time.Second) // large native binary can be slow to boot
 
 	for time.Now().Before(deadline) {
 		select {
@@ -300,25 +313,43 @@ func (m *Manager) waitUntilOnline(ctx context.Context, port string) {
 			return
 		default:
 		}
-		resp, err := client.Get(url)
-		if err == nil {
-			resp.Body.Close()
-			if resp.StatusCode >= 200 && resp.StatusCode < 500 {
-				m.setStatus(StatusOnline, "")
-				return
+		// Prefer HTTP health, then any open TCP port
+		for _, p := range paths {
+			resp, err := client.Get("http://127.0.0.1:" + port + p)
+			if err == nil {
+				resp.Body.Close()
+				if resp.StatusCode >= 200 && resp.StatusCode < 500 {
+					m.setStatus(StatusOnline, "")
+					return
+				}
 			}
 		}
-		// Also accept if the port is listening (some versions may not have /global/health yet)
 		if conn, err := net.DialTimeout("tcp", "127.0.0.1:"+port, 500*time.Millisecond); err == nil {
 			conn.Close()
-			// Give it a moment then mark online
-			time.Sleep(400 * time.Millisecond)
+			time.Sleep(500 * time.Millisecond)
 			m.setStatus(StatusOnline, "")
 			return
 		}
-		time.Sleep(600 * time.Millisecond)
+		// If process already died, stop waiting (status set by Wait goroutine)
+		m.mu.Lock()
+		alive := m.isRunning
+		m.mu.Unlock()
+		if !alive {
+			return
+		}
+		time.Sleep(700 * time.Millisecond)
 	}
-	m.setStatus(StatusError, "OpenCode serve did not become healthy in time")
+	m.mu.Lock()
+	logs := append([]string(nil), m.recentLogs...)
+	m.mu.Unlock()
+	tail := ""
+	if len(logs) > 0 {
+		if len(logs) > 6 {
+			logs = logs[len(logs)-6:]
+		}
+		tail = " | " + strings.Join(logs, " · ")
+	}
+	m.setStatus(StatusError, "OpenCode serve did not become healthy in time"+tail)
 }
 
 // Stop terminates the serve process.

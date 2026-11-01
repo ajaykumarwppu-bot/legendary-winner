@@ -157,6 +157,8 @@ fun ChatScreen(
     val currentConv by viewModel.currentConversation.collectAsState()
     val newChatAgent by viewModel.newChatAgent.collectAsState()
     val isClaudeChat = currentConv?.agent == com.example.gemini.domain.model.AgentKind.CLAUDE
+    val isOpenCodeChat = currentConv?.agent == com.example.gemini.domain.model.AgentKind.OPENCODE
+    val isAgyChat = !isClaudeChat && !isOpenCodeChat
     val isFreshNewChat = currentConv == null || currentConv?.title == "New Chat"
     val claudeBackend = viewModel.claudeBackend
     val claudePending by claudeBackend.pendingPermissions.collectAsState()
@@ -1298,7 +1300,7 @@ fun ChatScreen(
                     val isExistingChat = messages.isEmpty() && isExistingConversation && isLoadingConversation
                     Log.d("CHAT_OPEN_DEBUG", "🖥️ [ChatScreen Render] convId=${currentConv?.id}, title='${currentConv?.title}', isLoading=$isLoadingConversation, isExisting=$isExistingChat, msgCount=${messages.size}, error=$conversationError, isServerStopped=$isServerStopped")
 
-                    if (!isClaudeChat && isServerStopped && messages.isEmpty()) {
+                    if (isAgyChat && isServerStopped && messages.isEmpty()) {
                         BoxWithConstraints(
                             modifier = Modifier.fillMaxSize()
                         ) {
@@ -1324,7 +1326,7 @@ fun ChatScreen(
                                 com.example.gemini.ui.components.ServerStoppedPromptCard()
                             }
                         }
-                    } else if (!isClaudeChat && isServerInitializing && messages.isEmpty()) {
+                    } else if (isAgyChat && isServerInitializing && messages.isEmpty()) {
                         com.example.gemini.ui.components.EngineWarmingUpView()
                     } else if (!conversationError.isNullOrBlank() && messages.isEmpty() && (isExistingConversation || currentConv != null)) {
                         Column(
@@ -1421,7 +1423,22 @@ fun ChatScreen(
                                         onServerLogs = { showLocalServerOutputDialog = true },
                                         serverStarting = serverRestarting
                                     )
-                                } else when (if (isClaudeChat) null else systemConnectionState.status) {
+                                } else if (isOpenCodeChat) {
+                                    Text(
+                                        text = "OpenCode",
+                                        fontSize = 22.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onSurface,
+                                        textAlign = TextAlign.Center
+                                    )
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                    Text(
+                                        text = "Local coding agent. Make sure Settings → OpenCode shows ONLINE, then send a message. API keys are configured inside OpenCode itself.",
+                                        fontSize = 14.sp,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                                        textAlign = TextAlign.Center
+                                    )
+                                } else when (if (isClaudeChat || isOpenCodeChat) null else systemConnectionState.status) {
                                     com.example.gemini.data.remote.SystemStatus.CHECKING_AUTH -> {
                                         com.example.gemini.ui.components.NewChatCheckingAuthPromptCard()
                                     }
@@ -2021,13 +2038,26 @@ fun ChatScreen(
 
                 // Chat Input Bar with Bottom Model & Thinking Selector Pills (Claude Android Style)
                 ChatInputBar(
-                    isOnline = if (isClaudeChat) !claudeState.isBlocking else systemConnectionState.canSend,
-                    isAuth = if (isClaudeChat) claudeChatState != com.example.gemini.data.agent.claude.ClaudeStatus.SIGNED_OUT && claudeChatState != com.example.gemini.data.agent.claude.ClaudeStatus.SIGNING_IN else systemConnectionState.isAuth,
-                    offlineMessage = if (isClaudeChat) when (claudeState) {
-                        com.example.gemini.data.agent.claude.ClaudeStatus.NOT_INSTALLED -> "Claude Code is not installed. Set it up in Settings."
-                        com.example.gemini.data.agent.claude.ClaudeStatus.BRIDGE_OUTDATED -> "Restart the local server to use Claude Code."
-                        else -> "The local server is offline. Start it to send messages."
-                    } else "Server is offline. Start the server to send messages.",
+                    isOnline = when {
+                        isClaudeChat -> !claudeState.isBlocking
+                        isOpenCodeChat -> true // OpenCode has its own serve; don't gate on AGY hub
+                        else -> systemConnectionState.canSend
+                    },
+                    isAuth = when {
+                        isClaudeChat -> claudeChatState != com.example.gemini.data.agent.claude.ClaudeStatus.SIGNED_OUT &&
+                            claudeChatState != com.example.gemini.data.agent.claude.ClaudeStatus.SIGNING_IN
+                        isOpenCodeChat -> true // no Google/AGY sign-in for OpenCode
+                        else -> systemConnectionState.isAuth
+                    },
+                    offlineMessage = when {
+                        isClaudeChat -> when (claudeState) {
+                            com.example.gemini.data.agent.claude.ClaudeStatus.NOT_INSTALLED -> "Claude Code is not installed. Set it up in Settings."
+                            com.example.gemini.data.agent.claude.ClaudeStatus.BRIDGE_OUTDATED -> "Restart the local server to use Claude Code."
+                            else -> "The local server is offline. Start it to send messages."
+                        }
+                        isOpenCodeChat -> "OpenCode serve is not ready. Open Settings → OpenCode and wait for ONLINE."
+                        else -> "Server is offline. Start the server to send messages."
+                    },
                     selectedModel = currentModel,
                     quota = currentQuota,
                     thinkingPreference = thinkingPref,

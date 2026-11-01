@@ -118,10 +118,18 @@ fun OpenCodeSettingsScreen(
                         )
                     }
                     Spacer(Modifier.width(10.dp))
+                    val statusDetail = installInfo?.optString("error").orEmpty().ifBlank {
+                        when {
+                            status == "online" -> "Ready"
+                            installed -> "Binary found"
+                            else -> "Binary missing"
+                        }
+                    }
                     Text(
-                        if (installed) "Binary found" else "Binary missing",
+                        statusDetail,
                         fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                        maxLines = 3
                     )
                 }
                 if (version.isNotBlank()) {
