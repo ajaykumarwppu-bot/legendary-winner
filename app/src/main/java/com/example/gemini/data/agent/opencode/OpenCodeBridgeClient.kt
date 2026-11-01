@@ -18,6 +18,13 @@ class OpenCodeBridgeClient(
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.MINUTES)
         .writeTimeout(30, TimeUnit.SECONDS)
+        // Bridge AuthMiddleware requires the framed security-token header on every /api/* call.
+        .addInterceptor { chain ->
+            val req = chain.request().newBuilder()
+                .header(AuthPreferences.currentFramedHeader, "true")
+                .build()
+            chain.proceed(req)
+        }
         .build()
 ) {
     private val jsonType = "application/json".toMediaType()
@@ -34,6 +41,11 @@ class OpenCodeBridgeClient(
                 }
                 if (resp.code == 503 && obj.optBoolean("disabled")) {
                     error("OpenCode is turned off in the app. Enable it in Settings → Agents and restart.")
+                }
+                if (resp.code == 401) {
+                    error(obj.optString("message").ifBlank {
+                        obj.optString("error").ifBlank { "unauthorized — bridge security token missing" }
+                    })
                 }
                 if (!resp.isSuccessful && !obj.optBoolean("success", false)) {
                     error(obj.optString("error").ifBlank { "HTTP ${resp.code}" })
